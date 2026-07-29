@@ -236,21 +236,29 @@ jobs:
                 exit 1
               done
             done
-            if dpkg-query -W -f="${Status}" openssh-client 2>/dev/null | grep -q "install ok installed"; then
+            if dpkg-query -W -f="\${Status}" openssh-client 2>/dev/null | grep -q "install ok installed"; then
               printf "%s\\n" "ERROR: openssh-client is installed." >&2
               exit 1
             fi
-            while IFS= read -r -d "" client; do
-              basename="${client##*/}"
-              case "$basename" in
-                gh|tofu|opentofu|ansible*|doppler|ssh|ssh-*|scp|sftp|dbclient)
-                  if [[ -x "$client" ]]; then
-                    printf "ERROR: forbidden executable client exists at %s\\n" "$client" >&2
-                    exit 1
-                  fi
-                  ;;
-              esac
-            done < <(find / -xdev \( -type f -o -type l \) -print0)
+            declare -A scanned_directories=()
+            IFS=: read -r -a path_directories <<< "$PATH"
+            path_directories+=(/bin /sbin /usr/bin /usr/sbin /usr/local/bin /usr/local/sbin)
+            for directory in "${path_directories[@]}"; do
+              [[ -n "$directory" && -d "$directory" ]] || continue
+              [[ -n "${scanned_directories[$directory]:-}" ]] && continue
+              scanned_directories[$directory]=1
+              while IFS= read -r -d "" client; do
+                basename="${client##*/}"
+                case "$basename" in
+                  gh|tofu|opentofu|ansible*|doppler|ssh|ssh-*|scp|sftp|dbclient)
+                    if [[ -x "$client" ]]; then
+                      printf "ERROR: forbidden executable client exists at %s\\n" "$client" >&2
+                      exit 1
+                    fi
+                    ;;
+                esac
+              done < <(find "$directory" -maxdepth 1 \( -type f -o -type l \) -print0)
+            done
           '
 
       - name: Publish verified agent image
