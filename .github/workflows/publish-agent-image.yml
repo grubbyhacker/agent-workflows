@@ -169,11 +169,11 @@ jobs:
           printf '%s\n' "$manifest_sha" > "$build_dir/.agent-image-build/dependency-manifest.sha256"
 
           {
-            printf '%s\n' 'FROM --platform=$BUILDPLATFORM ghcr.io/grubbyhacker/gh-agent-broker:sha-116789c1e5ffa51e703efdc6a247e33475814138 AS broker-worker'
+            printf '%s\n' 'FROM --platform=$BUILDPLATFORM ghcr.io/grubbyhacker/gh-agent-broker@sha256:c5e4b006679d61df11692b7fa511939993242d1281ce308f160b12c5db96fbe1 AS broker-worker'
             printf '%s\n' 'FROM --platform=$BUILDPLATFORM golang:1.26.5 AS broker-cli'
             printf '%s\n' 'ARG TARGETOS'
             printf '%s\n' 'ARG TARGETARCH'
-            printf '%s\n' 'ARG BROKER_REVISION=116789c1e5ffa51e703efdc6a247e33475814138'
+            printf '%s\n' 'ARG BROKER_REVISION=ca4cfef8db9751533c9dff8c69284187284e3b8d'
             printf '%s\n' 'RUN git init /src && git -C /src remote add origin https://github.com/grubbyhacker/gh-agent-broker.git && git -C /src fetch --depth 1 origin "$BROKER_REVISION" && git -C /src checkout --detach FETCH_HEAD && cd /src && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -o /out/gh-agent-broker-cli ./cmd/gh-agent-broker'
             printf '%s\n' 'FROM ghcr.io/jdx/mise:2026.7.15@sha256:e62097049bfc980de5d9a25fbe16431e24c1e7713b3f77b18c04f81c25239953 AS mise'
             printf '%s\n' 'FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd'
@@ -181,11 +181,11 @@ jobs:
             printf '%s\n' 'RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certificates curl fd-find git jq ripgrep tar && rm -rf /var/lib/apt/lists/* && ln -s /usr/bin/fdfind /usr/local/bin/fd'
             printf '%s\n' 'COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise'
             printf '%s\n' 'COPY --from=broker-cli /out/gh-agent-broker-cli /usr/local/bin/gh-agent-broker-cli'
-            printf '%s\n' 'RUN --mount=from=broker-worker,source=/usr/local/bin,target=/broker-bin,readonly install -m 0755 /broker-bin/agent-repo-task-worker /usr/local/bin/agent-repo-task-worker && if [ -e /broker-bin/agent-codex-repo-task-worker ]; then install -m 0755 /broker-bin/agent-codex-repo-task-worker /usr/local/bin/agent-codex-repo-task-worker; else printf "%s\\n" "WARNING: broker image does not yet contain agent-codex-repo-task-worker; publish that broker entrypoint before using Codex repository tasks." >&2; fi'
+            printf '%s\n' 'RUN --mount=from=broker-worker,source=/usr/local/bin,target=/broker-bin,readonly install -m 0755 /broker-bin/agent-repo-task-worker /usr/local/bin/agent-repo-task-worker && install -m 0755 /broker-bin/agent-codex-repo-task-worker /usr/local/bin/agent-codex-repo-task-worker'
             printf '%s\n' 'ARG TARGETARCH'
             printf '%s\n' 'ARG CODEX_VERSION=0.146.0'
             printf '%s\n' 'RUN case "$TARGETARCH" in amd64) codex_arch=x64; codex_target=x86_64-unknown-linux-musl; codex_sha512=7ecc2fc86a6b00f08c88e12e7bfecc28c93ba428e1f6464825f257e62f5ab667e798661b602714859b041fd2c43f4fb4b79c723ea0db7cd5d8ecd4b1215b97c4 ;; arm64) codex_arch=arm64; codex_target=aarch64-unknown-linux-musl; codex_sha512=aa2603c649041675c6ee3a1a7495ba43e5dc8320d70a919da5af6793f73e8b4804a26babd63edb1efc75d8d7d658217fcbc4eaae2e9acbe14bb82d8c8dd7a1b4 ;; *) printf "Unsupported Codex architecture: %s\\n" "$TARGETARCH" >&2; exit 1 ;; esac && curl -fsSL "https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_VERSION}-linux-${codex_arch}.tgz" -o /tmp/codex.tgz && printf "%s  /tmp/codex.tgz\\n" "$codex_sha512" | sha512sum -c - && install -d /tmp/codex /opt/codex && tar -xzf /tmp/codex.tgz -C /tmp/codex --strip-components=1 && cp -a "/tmp/codex/vendor/${codex_target}/." /opt/codex/ && ln -s /opt/codex/bin/codex /usr/local/bin/codex && rm -rf /tmp/codex /tmp/codex.tgz'
-            printf '%s\n' 'RUN chmod 0755 /usr/local/bin/mise /usr/local/bin/gh-agent-broker-cli /usr/local/bin/agent-repo-task-worker /usr/local/bin/codex && if [ -e /usr/local/bin/agent-codex-repo-task-worker ]; then chmod 0755 /usr/local/bin/agent-codex-repo-task-worker; fi'
+            printf '%s\n' 'RUN chmod 0755 /usr/local/bin/mise /usr/local/bin/gh-agent-broker-cli /usr/local/bin/agent-repo-task-worker /usr/local/bin/agent-codex-repo-task-worker /usr/local/bin/codex'
             printf '%s\n' 'WORKDIR /workspace'
             printf '%s\n' 'COPY .agent-image-inputs/ /workspace/'
             printf '%s\n' 'RUN /workspace/.agent-image-build/install-dependencies.sh && rm -rf /workspace/.agent-image-build'
