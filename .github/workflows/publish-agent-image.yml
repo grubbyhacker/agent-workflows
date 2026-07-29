@@ -190,6 +190,7 @@ jobs:
             printf '%s\n' 'COPY .agent-image-inputs/ /workspace/'
             printf '%s\n' 'RUN /workspace/.agent-image-build/install-dependencies.sh && rm -rf /workspace/.agent-image-build'
             printf '%s\n' 'COPY .agent-image-inputs/.agent-image-build/dependency-manifest.sha256 /usr/local/share/agent-image/dependency-manifest.sha256'
+            printf '%s\n' 'COPY .agent-image-inputs/.agent-image-build/dependency-manifest.inputs /usr/local/share/agent-image/dependency-manifest.inputs'
             printf '%s\n' 'ARG DEPENDENCY_MANIFEST_SHA256'
             printf '%s\n' 'LABEL io.grubbyhacker.agent-image.dependency-manifest=$DEPENDENCY_MANIFEST_SHA256'
             printf '%s\n' 'CMD ["bash"]'
