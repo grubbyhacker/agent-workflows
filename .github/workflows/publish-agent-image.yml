@@ -1,0 +1,266 @@
+name: Publish agent image
+
+"on":
+  workflow_call:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Build and publish agent image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out calling repository
+        uses: actions/checkout@v7
+
+      - name: Initialize Git submodules
+        shell: bash
+        run: git submodule update --init --recursive
+
+      - name: Prepare declared dependency inputs
+        id: inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          fail() {
+            printf 'ERROR: %s\n' "$1" >&2
+            exit 1
+          }
+
+          [[ -f mise.toml ]] || fail 'Agent images require a root mise.toml; no dependency installation was attempted.'
+          git diff --quiet || fail 'The checkout contains unexpected changes before dependency inputs were collected.'
+
+          build_dir=.agent-image-inputs
+          rm -rf "$build_dir"
+          install -d "$build_dir/.agent-image-build"
+
+          copy_input() {
+            local path="$1"
+            git ls-files --error-unmatch -- "$path" >/dev/null 2>&1 \
+              || fail "Dependency input '$path' must be tracked by Git."
+            install -D -m 0644 "$path" "$build_dir/$path"
+          }
+
+          copy_submodule() {
+            local path="$1"
+
+            install -d "$build_dir/$path"
+            tar --exclude-vcs -C "$path" -cf - . | tar -C "$build_dir/$path" -xf -
+          }
+
+          collect_submodule_manifest_entries() {
+            local repository="$1"
+            local prefix="$2"
+            local entry metadata path mode sha
+
+            while IFS= read -r -d '' entry; do
+              metadata="${entry%%$'\t'*}"
+              path="${entry#*$'\t'}"
+              mode="${metadata%% *}"
+              [[ "$mode" == '160000' ]] || continue
+              sha="${metadata#* }"
+              sha="${sha%% *}"
+              printf 'submodule %s %s\n' "$sha" "$prefix$path"
+              collect_submodule_manifest_entries "$repository/$path" "$prefix$path/"
+            done < <(git -C "$repository" ls-files --stage -z)
+          }
+
+          copy_input mise.toml
+          lockfiles=()
+          while IFS= read -r path; do
+            case "$path" in
+              package-lock.json|pnpm-lock.yaml|yarn.lock|bun.lock|bun.lockb|uv.lock|poetry.lock|Pipfile.lock|go.sum|Cargo.lock|Gemfile.lock|requirements*.txt)
+                lockfiles+=("$path")
+                ;;
+              */*lock*|*lock*.json|*lock*.yaml|*lock*.yml|*Lock*|*requirements*.txt)
+                fail "Cannot derive a deterministic install command for lockfile '$path'. Add support to the shared workflow; do not add a repository build recipe."
+                ;;
+            esac
+          done < <(git ls-files)
+
+          for lockfile in "${lockfiles[@]}"; do
+            copy_input "$lockfile"
+          done
+
+          while IFS= read -r -d '' submodule_entry; do
+            submodule_metadata="${submodule_entry%%$'\t'*}"
+            [[ "${submodule_metadata%% *}" == '160000' ]] || continue
+            submodule_path="${submodule_entry#*$'\t'}"
+            copy_submodule "$submodule_path"
+          done < <(git ls-files --stage -z)
+
+          package_locks=0
+          for lockfile in package-lock.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb; do
+            [[ -f "$lockfile" ]] && ((package_locks += 1))
+          done
+          (( package_locks <= 1 )) || fail 'More than one JavaScript lockfile is present; the shared workflow will not guess a package manager.'
+
+          install_commands=()
+          if [[ -f package-lock.json ]]; then
+            [[ -f package.json ]] || fail 'package-lock.json requires package.json.'
+            copy_input package.json
+            install_commands+=("mise exec -- npm ci")
+          elif [[ -f pnpm-lock.yaml ]]; then
+            [[ -f package.json ]] || fail 'pnpm-lock.yaml requires package.json.'
+            copy_input package.json
+            install_commands+=("mise exec -- corepack pnpm install --frozen-lockfile")
+          elif [[ -f bun.lock || -f bun.lockb ]]; then
+            [[ -f package.json ]] || fail 'bun lockfiles require package.json.'
+            copy_input package.json
+            install_commands+=("mise exec -- bun install --frozen-lockfile")
+          elif [[ -f yarn.lock ]]; then
+            fail 'yarn.lock is not supported yet because Yarn release/config discovery is repository-specific. Extend the shared workflow rather than adding a caller recipe.'
+          fi
+
+          if [[ -f uv.lock ]]; then
+            [[ -f pyproject.toml ]] || fail 'uv.lock requires pyproject.toml.'
+            copy_input pyproject.toml
+            install_commands+=("mise exec -- uv sync --frozen --no-install-project")
+          fi
+          if [[ -f poetry.lock || -f Pipfile.lock || -f Gemfile.lock ]]; then
+            fail 'poetry.lock, Pipfile.lock, and Gemfile.lock are not supported yet. Extend the shared workflow rather than adding a caller recipe.'
+          fi
+          for lockfile in "${lockfiles[@]}"; do
+            [[ "$lockfile" == requirements*.txt ]] || continue
+            if ! grep -Eq -- '--hash=' "$lockfile"; then
+              fail "'$lockfile' must use pip hashes before it can be used as an agent-image lockfile."
+            fi
+            install_commands+=("mise exec -- python -m pip install --require-hashes -r $lockfile")
+          done
+          if [[ -f go.sum ]]; then
+            [[ -f go.mod ]] || fail 'go.sum requires go.mod.'
+            copy_input go.mod
+            install_commands+=("mise exec -- go mod download")
+          fi
+          if [[ -f Cargo.lock ]]; then
+            [[ -f Cargo.toml ]] || fail 'Cargo.lock requires Cargo.toml.'
+            copy_input Cargo.toml
+            install_commands+=("mise exec -- cargo fetch --locked")
+          fi
+
+          {
+            printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+            printf 'mise install --yes\n'
+            for command in "${install_commands[@]}"; do
+              printf '%s\n' "$command"
+            done
+          } > "$build_dir/.agent-image-build/install-dependencies.sh"
+          chmod 0755 "$build_dir/.agent-image-build/install-dependencies.sh"
+
+          manifest_files=()
+          for manifest_file in package.json go.mod pyproject.toml Cargo.toml; do
+            if git ls-files --error-unmatch -- "$manifest_file" >/dev/null 2>&1; then
+              manifest_files+=("$manifest_file")
+            fi
+          done
+
+          {
+            sha256sum mise.toml
+            for lockfile in "${lockfiles[@]}"; do sha256sum "$lockfile"; done
+            for manifest_file in "${manifest_files[@]}"; do sha256sum "$manifest_file"; done
+            collect_submodule_manifest_entries '.' ''
+          } | LC_ALL=C sort > "$build_dir/.agent-image-build/dependency-manifest.inputs"
+          manifest_sha="$(sha256sum "$build_dir/.agent-image-build/dependency-manifest.inputs" | awk '{print $1}')"
+          printf '%s\n' "$manifest_sha" > "$build_dir/.agent-image-build/dependency-manifest.sha256"
+
+          {
+            printf '%s\n' 'FROM ghcr.io/grubbyhacker/gh-agent-broker:sha-3e3ef08243f7ffa83b6e5c45234e6569f32656f5 AS broker-cli'
+            printf '%s\n' 'FROM ghcr.io/jdx/mise:2025.7.20@sha256:b06f42110f5d0b283d784ed8b7be40cd7bbd67c0bd4beb1eded5d1f304fbef76 AS mise'
+            printf '%s\n' 'FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818'
+            printf '%s\n' 'ENV MISE_DATA_DIR=/opt/mise MISE_CONFIG_DIR=/opt/mise MISE_CACHE_DIR=/opt/mise/cache PATH=/opt/mise/shims:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin'
+            printf '%s\n' 'RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certificates curl fd-find git jq ripgrep && rm -rf /var/lib/apt/lists/* && ln -s /usr/bin/fdfind /usr/local/bin/fd'
+            printf '%s\n' 'COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise'
+            printf '%s\n' 'COPY --from=broker-cli /usr/local/bin/gh-agent-broker-cli /usr/local/bin/gh-agent-broker-cli'
+            printf '%s\n' 'RUN chmod 0755 /usr/local/bin/mise /usr/local/bin/gh-agent-broker-cli'
+            printf '%s\n' 'WORKDIR /workspace'
+            printf '%s\n' 'COPY .agent-image-inputs/ /workspace/'
+            printf '%s\n' 'RUN /workspace/.agent-image-build/install-dependencies.sh && rm -rf /workspace/.agent-image-build'
+            printf '%s\n' 'COPY .agent-image-inputs/.agent-image-build/dependency-manifest.sha256 /usr/local/share/agent-image/dependency-manifest.sha256'
+            printf '%s\n' 'ARG DEPENDENCY_MANIFEST_SHA256'
+            printf '%s\n' 'LABEL io.grubbyhacker.agent-image.dependency-manifest=$DEPENDENCY_MANIFEST_SHA256'
+            printf '%s\n' 'CMD ["bash"]'
+          } > "$build_dir/Dockerfile"
+
+          printf 'manifest_sha=%s\n' "$manifest_sha" >> "$GITHUB_OUTPUT"
+          printf 'image=ghcr.io/%s-agent\n' "$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.inputs.outputs.image }}
+          tags: |
+            type=sha,prefix=sha-,format=long
+            type=raw,value=main,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+
+      - name: Build agent image for verification
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: .agent-image-inputs/Dockerfile
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: agent-image-verification:${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            DEPENDENCY_MANIFEST_SHA256=${{ steps.inputs.outputs.manifest_sha }}
+
+      - name: Assert forbidden clients are absent from the built image
+        env:
+          IMAGE: agent-image-verification:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint bash "$IMAGE" -euo pipefail -c '
+            forbidden_command_patterns="gh tofu opentofu ansible* doppler ssh ssh-* scp sftp dbclient"
+            for pattern in $forbidden_command_patterns; do
+              for command in $(compgen -c | LC_ALL=C sort -u); do
+                [[ "$command" == $pattern ]] || continue
+                printf "ERROR: forbidden command %s is present at %s\\n" "$command" "$(command -v "$command")" >&2
+                exit 1
+              done
+            done
+            if dpkg-query -W -f="${Status}" openssh-client 2>/dev/null | grep -q "install ok installed"; then
+              printf "%s\\n" "ERROR: openssh-client is installed." >&2
+              exit 1
+            fi
+            while IFS= read -r -d "" client; do
+              basename="${client##*/}"
+              case "$basename" in
+                gh|tofu|opentofu|ansible*|doppler|ssh|ssh-*|scp|sftp|dbclient)
+                  if [[ -x "$client" ]]; then
+                    printf "ERROR: forbidden executable client exists at %s\\n" "$client" >&2
+                    exit 1
+                  fi
+                  ;;
+              esac
+            done < <(find / -xdev \( -type f -o -type l \) -print0)
+          '
+
+      - name: Publish verified agent image
+        env:
+          IMAGE: agent-image-verification:${{ github.sha }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            docker tag "$IMAGE" "$tag"
+            docker push "$tag"
+          done <<< "$TAGS"
