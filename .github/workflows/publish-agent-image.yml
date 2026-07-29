@@ -144,6 +144,7 @@ jobs:
 
           {
             printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+            printf 'mise trust --yes mise.toml\n'
             printf 'mise install --yes\n'
             for command in "${install_commands[@]}"; do
               printf '%s\n' "$command"
