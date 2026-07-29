@@ -170,7 +170,7 @@ jobs:
 
           {
             printf '%s\n' 'FROM ghcr.io/grubbyhacker/gh-agent-broker:sha-3e3ef08243f7ffa83b6e5c45234e6569f32656f5 AS broker-cli'
-            printf '%s\n' 'FROM ghcr.io/jdx/mise:2025.7.20@sha256:b06f42110f5d0b283d784ed8b7be40cd7bbd67c0bd4beb1eded5d1f304fbef76 AS mise'
+            printf '%s\n' 'FROM ghcr.io/jdx/mise:2026.7.15@sha256:e62097049bfc980de5d9a25fbe16431e24c1e7713b3f77b18c04f81c25239953 AS mise'
             printf '%s\n' 'FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818'
             printf '%s\n' 'ENV MISE_DATA_DIR=/opt/mise MISE_CONFIG_DIR=/opt/mise MISE_CACHE_DIR=/opt/mise/cache PATH=/opt/mise/shims:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin'
             printf '%s\n' 'RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certificates curl fd-find git jq ripgrep && rm -rf /var/lib/apt/lists/* && ln -s /usr/bin/fdfind /usr/local/bin/fd'
