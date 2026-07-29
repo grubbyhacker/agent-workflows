@@ -169,11 +169,11 @@ jobs:
           printf '%s\n' "$manifest_sha" > "$build_dir/.agent-image-build/dependency-manifest.sha256"
 
           {
-            printf '%s\n' 'FROM --platform=$BUILDPLATFORM ghcr.io/grubbyhacker/gh-agent-broker@sha256:c5e4b006679d61df11692b7fa511939993242d1281ce308f160b12c5db96fbe1 AS broker-worker'
+            printf '%s\n' 'FROM --platform=$BUILDPLATFORM ghcr.io/grubbyhacker/gh-agent-broker@sha256:c176a5f1318198e5a0f44b00be8fa1a71111eec1b60623418c63403b18a8ea5d AS broker-worker'
             printf '%s\n' 'FROM --platform=$BUILDPLATFORM golang:1.26.5 AS broker-cli'
             printf '%s\n' 'ARG TARGETOS'
             printf '%s\n' 'ARG TARGETARCH'
-            printf '%s\n' 'ARG BROKER_REVISION=ca4cfef8db9751533c9dff8c69284187284e3b8d'
+            printf '%s\n' 'ARG BROKER_REVISION=927978b8cc237c69562347256d62f0b644088ff3'
             printf '%s\n' 'RUN git init /src && git -C /src remote add origin https://github.com/grubbyhacker/gh-agent-broker.git && git -C /src fetch --depth 1 origin "$BROKER_REVISION" && git -C /src checkout --detach FETCH_HEAD && cd /src && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -o /out/gh-agent-broker-cli ./cmd/gh-agent-broker'
             printf '%s\n' 'FROM ghcr.io/jdx/mise:2026.7.15@sha256:e62097049bfc980de5d9a25fbe16431e24c1e7713b3f77b18c04f81c25239953 AS mise'
             printf '%s\n' 'FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd'
