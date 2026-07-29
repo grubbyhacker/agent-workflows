@@ -227,31 +227,7 @@ jobs:
           IMAGE: agent-image-verification:${{ github.sha }}
         run: |
           set -euo pipefail
-          docker run --rm --entrypoint bash "$IMAGE" -euo pipefail -c '
-            forbidden_command_patterns="gh tofu opentofu ansible* doppler ssh ssh-* scp sftp dbclient"
-            for pattern in $forbidden_command_patterns; do
-              for command in $(compgen -c | LC_ALL=C sort -u); do
-                [[ "$command" == $pattern ]] || continue
-                printf "ERROR: forbidden command %s is present at %s\\n" "$command" "$(command -v "$command")" >&2
-                exit 1
-              done
-            done
-            if dpkg-query -W -f="${Status}" openssh-client 2>/dev/null | grep -q "install ok installed"; then
-              printf "%s\\n" "ERROR: openssh-client is installed." >&2
-              exit 1
-            fi
-            while IFS= read -r -d "" client; do
-              basename="${client##*/}"
-              case "$basename" in
-                gh|tofu|opentofu|ansible*|doppler|ssh|ssh-*|scp|sftp|dbclient)
-                  if [[ -x "$client" ]]; then
-                    printf "ERROR: forbidden executable client exists at %s\\n" "$client" >&2
-                    exit 1
-                  fi
-                  ;;
-              esac
-            done < <(find / -xdev \( -type f -o -type l \) -print0)
-          '
+          docker run --rm --entrypoint bash "$IMAGE" -s < .github/scripts/assert-forbidden-clients-absent.sh
 
       - name: Publish verified agent image
         env:
