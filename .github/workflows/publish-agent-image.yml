@@ -144,6 +144,7 @@ jobs:
 
           {
             printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+            printf 'mise trust --yes mise.toml\n'
             printf 'mise install --yes\n'
             for command in "${install_commands[@]}"; do
               printf '%s\n' "$command"
@@ -169,8 +170,8 @@ jobs:
 
           {
             printf '%s\n' 'FROM ghcr.io/grubbyhacker/gh-agent-broker:sha-3e3ef08243f7ffa83b6e5c45234e6569f32656f5 AS broker-cli'
-            printf '%s\n' 'FROM ghcr.io/jdx/mise:2025.7.20@sha256:b06f42110f5d0b283d784ed8b7be40cd7bbd67c0bd4beb1eded5d1f304fbef76 AS mise'
-            printf '%s\n' 'FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818'
+            printf '%s\n' 'FROM ghcr.io/jdx/mise:2026.7.15@sha256:e62097049bfc980de5d9a25fbe16431e24c1e7713b3f77b18c04f81c25239953 AS mise'
+            printf '%s\n' 'FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd'
             printf '%s\n' 'ENV MISE_DATA_DIR=/opt/mise MISE_CONFIG_DIR=/opt/mise MISE_CACHE_DIR=/opt/mise/cache PATH=/opt/mise/shims:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin'
             printf '%s\n' 'RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certificates curl fd-find git jq ripgrep && rm -rf /var/lib/apt/lists/* && ln -s /usr/bin/fdfind /usr/local/bin/fd'
             printf '%s\n' 'COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise'
@@ -236,21 +237,29 @@ jobs:
                 exit 1
               done
             done
-            if dpkg-query -W -f="${Status}" openssh-client 2>/dev/null | grep -q "install ok installed"; then
+            if dpkg-query -W -f="\${Status}" openssh-client 2>/dev/null | grep -q "install ok installed"; then
               printf "%s\\n" "ERROR: openssh-client is installed." >&2
               exit 1
             fi
-            while IFS= read -r -d "" client; do
-              basename="${client##*/}"
-              case "$basename" in
-                gh|tofu|opentofu|ansible*|doppler|ssh|ssh-*|scp|sftp|dbclient)
-                  if [[ -x "$client" ]]; then
-                    printf "ERROR: forbidden executable client exists at %s\\n" "$client" >&2
-                    exit 1
-                  fi
-                  ;;
-              esac
-            done < <(find / -xdev \( -type f -o -type l \) -print0)
+            declare -A scanned_directories=()
+            IFS=: read -r -a path_directories <<< "$PATH"
+            path_directories+=(/bin /sbin /usr/bin /usr/sbin /usr/local/bin /usr/local/sbin)
+            for directory in "${path_directories[@]}"; do
+              [[ -n "$directory" && -d "$directory" ]] || continue
+              [[ -n "${scanned_directories[$directory]:-}" ]] && continue
+              scanned_directories[$directory]=1
+              while IFS= read -r -d "" client; do
+                basename="${client##*/}"
+                case "$basename" in
+                  gh|tofu|opentofu|ansible*|doppler|ssh|ssh-*|scp|sftp|dbclient)
+                    if [[ -x "$client" ]]; then
+                      printf "ERROR: forbidden executable client exists at %s\\n" "$client" >&2
+                      exit 1
+                    fi
+                    ;;
+                esac
+              done < <(find "$directory" -maxdepth 1 \( -type f -o -type l \) -print0)
+            done
           '
 
       - name: Publish verified agent image
