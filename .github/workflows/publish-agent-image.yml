@@ -169,29 +169,37 @@ jobs:
           printf '%s\n' "$manifest_sha" > "$build_dir/.agent-image-build/dependency-manifest.sha256"
 
           {
-            printf '%s\n' 'FROM --platform=$BUILDPLATFORM ghcr.io/grubbyhacker/gh-agent-broker@sha256:c56bb1b5e402f0bdcbb6ef3e5163540e0121d61435ff888eadbc5569dca0843b AS broker-worker'
-            printf '%s\n' 'FROM --platform=$BUILDPLATFORM golang:1.26.5 AS broker-cli'
+            printf '%s\n' 'ARG BROKER_REVISION=892c1a1c3f6069f0b2006d6f7ee65226d7eb28fd'
+            printf '%s\n' 'FROM --platform=$BUILDPLATFORM golang:1.26.5 AS broker-source'
             printf '%s\n' 'ARG TARGETOS'
             printf '%s\n' 'ARG TARGETARCH'
-            printf '%s\n' 'ARG BROKER_REVISION=635dde7e4963321837fa0369d159c4fb05d05aa6'
-            printf '%s\n' 'RUN git init /src && git -C /src remote add origin https://github.com/grubbyhacker/gh-agent-broker.git && git -C /src fetch --depth 1 origin "$BROKER_REVISION" && git -C /src checkout --detach FETCH_HEAD && cd /src && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -o /out/gh-agent-broker-cli ./cmd/gh-agent-broker'
+            printf '%s\n' 'ARG BROKER_REVISION'
+            printf '%s\n' 'RUN git init /src && git -C /src remote add origin https://github.com/grubbyhacker/gh-agent-broker.git && git -C /src fetch --depth 1 origin "$BROKER_REVISION" && git -C /src checkout --detach FETCH_HEAD && test "$(git -C /src rev-parse HEAD)" = "$BROKER_REVISION"'
+            printf '%s\n' 'RUN test -s /src/workers/repo-task/worker.sh && test -s /src/workers/codex-repo-prep/worker.sh && test -s /src/workers/codex-repo-task/worker.sh && test -s /src/workers/codex-delivery/worker.sh && test -s /src/workers/result.sh && cd /src && mkdir -p /out && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -o /out/gh-agent-broker-cli ./cmd/gh-agent-broker && git rev-parse HEAD > /out/broker-source-revision'
             printf '%s\n' 'FROM ghcr.io/jdx/mise:2026.7.15@sha256:e62097049bfc980de5d9a25fbe16431e24c1e7713b3f77b18c04f81c25239953 AS mise'
             printf '%s\n' 'FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd'
+            printf '%s\n' 'ARG BROKER_REVISION'
             printf '%s\n' 'ENV MISE_DATA_DIR=/opt/mise MISE_CONFIG_DIR=/opt/mise MISE_CACHE_DIR=/opt/mise/cache PATH=/opt/mise/shims:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin'
             printf '%s\n' 'RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certificates curl fd-find git jq ripgrep tar && rm -rf /var/lib/apt/lists/* && ln -s /usr/bin/fdfind /usr/local/bin/fd'
             printf '%s\n' 'COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise'
-            printf '%s\n' 'COPY --from=broker-cli /out/gh-agent-broker-cli /usr/local/bin/gh-agent-broker-cli'
-            printf '%s\n' 'RUN --mount=from=broker-worker,source=/usr/local/bin,target=/broker-bin,readonly --mount=from=broker-worker,source=/usr/local/lib,target=/broker-lib,readonly install -m 0755 /broker-bin/agent-repo-task-worker /usr/local/bin/agent-repo-task-worker && install -m 0755 /broker-bin/agent-codex-repo-task-worker /usr/local/bin/agent-codex-repo-task-worker && install -D -m 0755 /broker-lib/agent-worker-result.sh /usr/local/lib/agent-worker-result.sh'
+            printf '%s\n' 'COPY --from=broker-source /out/gh-agent-broker-cli /usr/local/bin/gh-agent-broker-cli'
+            printf '%s\n' 'COPY --from=broker-source /out/broker-source-revision /usr/local/share/agent-image/broker-source-revision'
+            printf '%s\n' 'COPY --from=broker-source /src/workers/repo-task/worker.sh /usr/local/bin/agent-repo-task-worker'
+            printf '%s\n' 'COPY --from=broker-source /src/workers/codex-repo-prep/worker.sh /usr/local/bin/agent-codex-repo-prep-worker'
+            printf '%s\n' 'COPY --from=broker-source /src/workers/codex-repo-task/worker.sh /usr/local/bin/agent-codex-repo-task-worker'
+            printf '%s\n' 'COPY --from=broker-source /src/workers/codex-delivery/worker.sh /usr/local/bin/agent-codex-delivery-worker'
+            printf '%s\n' 'COPY --from=broker-source /src/workers/result.sh /usr/local/lib/agent-worker-result.sh'
             printf '%s\n' 'ARG TARGETARCH'
             printf '%s\n' 'ARG CODEX_VERSION=0.146.0'
             printf '%s\n' 'RUN case "$TARGETARCH" in amd64) codex_arch=x64; codex_target=x86_64-unknown-linux-musl; codex_sha512=7ecc2fc86a6b00f08c88e12e7bfecc28c93ba428e1f6464825f257e62f5ab667e798661b602714859b041fd2c43f4fb4b79c723ea0db7cd5d8ecd4b1215b97c4 ;; arm64) codex_arch=arm64; codex_target=aarch64-unknown-linux-musl; codex_sha512=aa2603c649041675c6ee3a1a7495ba43e5dc8320d70a919da5af6793f73e8b4804a26babd63edb1efc75d8d7d658217fcbc4eaae2e9acbe14bb82d8c8dd7a1b4 ;; *) printf "Unsupported Codex architecture: %s\\n" "$TARGETARCH" >&2; exit 1 ;; esac && curl -fsSL "https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_VERSION}-linux-${codex_arch}.tgz" -o /tmp/codex.tgz && printf "%s  /tmp/codex.tgz\\n" "$codex_sha512" | sha512sum -c - && install -d /tmp/codex /opt/codex && tar -xzf /tmp/codex.tgz -C /tmp/codex --strip-components=1 && cp -a "/tmp/codex/vendor/${codex_target}/." /opt/codex/ && ln -s /opt/codex/bin/codex /usr/local/bin/codex && rm -rf /tmp/codex /tmp/codex.tgz'
-            printf '%s\n' 'RUN chmod 0755 /usr/local/bin/mise /usr/local/bin/gh-agent-broker-cli /usr/local/bin/agent-repo-task-worker /usr/local/bin/agent-codex-repo-task-worker /usr/local/bin/codex'
+            printf '%s\n' 'RUN chmod 0755 /usr/local/bin/mise /usr/local/bin/gh-agent-broker-cli /usr/local/bin/agent-repo-task-worker /usr/local/bin/agent-codex-repo-prep-worker /usr/local/bin/agent-codex-repo-task-worker /usr/local/bin/agent-codex-delivery-worker /usr/local/lib/agent-worker-result.sh /usr/local/bin/codex && test "$(cat /usr/local/share/agent-image/broker-source-revision)" = "$BROKER_REVISION" && test -x /usr/local/bin/gh-agent-broker-cli && test -x /usr/local/bin/agent-repo-task-worker && test -x /usr/local/bin/agent-codex-repo-prep-worker && test -x /usr/local/bin/agent-codex-repo-task-worker && test -x /usr/local/bin/agent-codex-delivery-worker && test -x /usr/local/lib/agent-worker-result.sh'
             printf '%s\n' 'WORKDIR /workspace'
             printf '%s\n' 'COPY .agent-image-inputs/ /workspace/'
             printf '%s\n' 'RUN /workspace/.agent-image-build/install-dependencies.sh && rm -rf /workspace/.agent-image-build'
             printf '%s\n' 'COPY .agent-image-inputs/.agent-image-build/dependency-manifest.sha256 /usr/local/share/agent-image/dependency-manifest.sha256'
             printf '%s\n' 'ARG DEPENDENCY_MANIFEST_SHA256'
             printf '%s\n' 'LABEL io.grubbyhacker.agent-image.dependency-manifest=$DEPENDENCY_MANIFEST_SHA256'
+            printf '%s\n' 'LABEL io.grubbyhacker.agent-image.broker-source-revision=$BROKER_REVISION'
             printf '%s\n' 'CMD ["bash"]'
           } > "$build_dir/Dockerfile"
 
@@ -235,6 +243,31 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             DEPENDENCY_MANIFEST_SHA256=${{ steps.inputs.outputs.manifest_sha }}
+
+      - name: Assert broker source provenance and installed entrypoints
+        env:
+          IMAGE: agent-image-verification:${{ github.sha }}
+          BROKER_SOURCE_REVISION: 892c1a1c3f6069f0b2006d6f7ee65226d7eb28fd
+        run: |
+          set -euo pipefail
+          [[ "$(docker image inspect --format '{{.Architecture}}' "$IMAGE")" == amd64 ]]
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "io.grubbyhacker.agent-image.broker-source-revision" }}' "$IMAGE")" == "$BROKER_SOURCE_REVISION" ]]
+          docker run --rm --entrypoint bash -e BROKER_SOURCE_REVISION "$IMAGE" -euo pipefail -c '
+            [[ "$(uname -m)" == x86_64 ]]
+            [[ "$(cat /usr/local/share/agent-image/broker-source-revision)" == "$BROKER_SOURCE_REVISION" ]]
+            for entrypoint in \
+              /usr/local/bin/gh-agent-broker-cli \
+              /usr/local/bin/agent-repo-task-worker \
+              /usr/local/bin/agent-codex-repo-prep-worker \
+              /usr/local/bin/agent-codex-repo-task-worker \
+              /usr/local/bin/agent-codex-delivery-worker \
+              /usr/local/lib/agent-worker-result.sh; do
+              [[ -f "$entrypoint" && -x "$entrypoint" ]] || {
+                printf "ERROR: required executable %s is missing.\\n" "$entrypoint" >&2
+                exit 1
+              }
+            done
+          '
 
       - name: Assert forbidden clients are absent from the built image
         env:
