@@ -247,7 +247,7 @@ jobs:
       - name: Assert broker source provenance and installed entrypoints
         env:
           IMAGE: agent-image-verification:${{ github.sha }}
-          BROKER_SOURCE_REVISION: 4f25480185165a59856b252ed4aec48546777bad
+          BROKER_SOURCE_REVISION: f8cb46ef49ef12a18716f9a5a2422c43d813cbd2
         run: |
           set -euo pipefail
           [[ "$(docker image inspect --format '{{.Architecture}}' "$IMAGE")" == amd64 ]]
