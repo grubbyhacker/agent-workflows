@@ -169,7 +169,7 @@ jobs:
           printf '%s\n' "$manifest_sha" > "$build_dir/.agent-image-build/dependency-manifest.sha256"
 
           {
-            printf '%s\n' 'ARG BROKER_REVISION=9fc5676017e8ae9b81d7bb6b36a4dd0d377550aa'
+            printf '%s\n' 'ARG BROKER_REVISION=9ad1841f60cbd01bdadeced303dcb27c38c3b0a3'
             printf '%s\n' 'FROM --platform=$BUILDPLATFORM golang:1.26.5 AS broker-source'
             printf '%s\n' 'ARG TARGETOS'
             printf '%s\n' 'ARG TARGETARCH'
@@ -247,7 +247,7 @@ jobs:
       - name: Assert broker source provenance and installed entrypoints
         env:
           IMAGE: agent-image-verification:${{ github.sha }}
-          BROKER_SOURCE_REVISION: 9fc5676017e8ae9b81d7bb6b36a4dd0d377550aa
+          BROKER_SOURCE_REVISION: 9ad1841f60cbd01bdadeced303dcb27c38c3b0a3
         run: |
           set -euo pipefail
           [[ "$(docker image inspect --format '{{.Architecture}}' "$IMAGE")" == amd64 ]]
