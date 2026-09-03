@@ -16,6 +16,14 @@ No Dockerfile or repository-specific image recipe is needed. The image is
 pushed as `ghcr.io/<owner>/<repository>-agent` with `sha-<commit>`, `main`,
 and semver tags when applicable.
 
+The published image is the reviewed repository-worker runtime. It contains the
+broker-pinned preparation, Codex execution, delivery, and recovery-validation
+entrypoints plus their shell, Git, Codex, mise, and repository-declared runtime
+dependencies. Consumers must deploy the immutable
+`ghcr.io/<owner>/<repository>-agent:sha-<commit>@sha256:<digest>` coordinate;
+the broker service image and its legacy implementation-worker image are not
+repository-worker runtimes.
+
 ```yaml
 jobs:
   publish-agent-image:
