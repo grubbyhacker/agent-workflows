@@ -2,6 +2,16 @@ name: Publish agent image
 
 "on":
   workflow_call:
+    inputs:
+      broker_revision:
+        description: >-
+          Exact gh-agent-broker source revision (40 lowercase hex) whose worker
+          entrypoints and CLI are baked into the agent image. Callers should pin
+          this explicitly so worker provenance cannot drift. Defaults to the
+          reviewed pin for backward compatibility with existing @v1 callers.
+        required: false
+        type: string
+        default: "12f5c77689c2a7cd24123420c4e579755e5eb20d"
 
 permissions:
   contents: read
@@ -33,6 +43,10 @@ jobs:
 
           [[ -f mise.toml ]] || fail 'Agent images require a root mise.toml; no dependency installation was attempted.'
           git diff --quiet || fail 'The checkout contains unexpected changes before dependency inputs were collected.'
+
+          broker_revision='${{ inputs.broker_revision }}'
+          [[ "$broker_revision" =~ ^[0-9a-f]{40}$ ]] \
+            || fail "broker_revision must be exactly 40 lowercase hex characters; got '$broker_revision'."
 
           build_dir=.agent-image-inputs
           rm -rf "$build_dir"
@@ -244,11 +258,12 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             DEPENDENCY_MANIFEST_SHA256=${{ steps.inputs.outputs.manifest_sha }}
+            BROKER_REVISION=${{ inputs.broker_revision }}
 
       - name: Assert broker source provenance and installed entrypoints
         env:
           IMAGE: agent-image-verification:${{ github.sha }}
-          BROKER_SOURCE_REVISION: 12f5c77689c2a7cd24123420c4e579755e5eb20d
+          BROKER_SOURCE_REVISION: ${{ inputs.broker_revision }}
         run: |
           set -euo pipefail
           [[ "$(docker image inspect --format '{{.Architecture}}' "$IMAGE")" == amd64 ]]
@@ -323,3 +338,4 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             DEPENDENCY_MANIFEST_SHA256=${{ steps.inputs.outputs.manifest_sha }}
+            BROKER_REVISION=${{ inputs.broker_revision }}

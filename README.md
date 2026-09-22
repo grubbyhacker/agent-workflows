@@ -31,11 +31,26 @@ jobs:
       contents: read
       packages: write
     uses: grubbyhacker/agent-workflows/.github/workflows/publish-agent-image.yml@v1
+    with:
+      # Pin the exact gh-agent-broker source revision whose worker entrypoints
+      # and CLI are baked into the image. Explicitly pinning this keeps worker
+      # provenance attributable and lets it advance without a workflow edit.
+      broker_revision: 12f5c77689c2a7cd24123420c4e579755e5eb20d
 ```
+
+### `broker_revision` input
+
+`broker_revision` is the exact `gh-agent-broker` source revision (40 lowercase
+hex) baked into the agent image. It is validated fail-closed and defaults to the
+reviewed pin, so existing `@v1` callers that omit it build exactly as before.
+Prefer setting it explicitly: a caller that pins the revision it was reviewed
+against cannot silently drift when the reviewed default later advances, and the
+resulting image's `io.grubbyhacker.agent-image.broker-source-revision` label and
+on-disk `broker-source-revision` are asserted against the pin before publish.
 
 Callers must reference a major version such as `@v1`, not `@main`. The major
 tag is a moving interface version: non-breaking updates advance it, while
-breaking changes require a new major tag such as `v2`.
+breaking changes require a new major tag.
 
 ## Agent runtime base
 
@@ -56,3 +71,23 @@ are unaffected; `scripts/validate-runtime-base-parity.py` fails CI if the two
 definitions ever disagree on a pinned property.
 
 See `docs/agent-platform/runtime-base.md`.
+
+## Advancing the `v1` tag after a non-breaking change
+
+Adding the optional, defaulted `broker_revision` input is interface-additive:
+callers that omit it are unaffected, so this is a non-breaking update that
+advances the existing `v1` tag in place rather than cutting a new major.
+
+After this PR merges to `main`, an authorized maintainer advances the tag with
+the repository's established process — the moving major tag is force-updated to
+the merged `main` commit and pushed:
+
+```sh
+git fetch origin
+git tag -f v1 origin/main
+git push -f origin v1
+```
+
+Tag movement is a deliberate, human-gated release step: it is not performed by
+this PR, by CI, or automatically on merge. Only once `v1` points at the merged
+commit can a caller pin `broker_revision` and have `@v1` honor it.
