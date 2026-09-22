@@ -1,0 +1,123 @@
+name: CI
+
+"on":
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Validate workflow syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          import sys
+
+          try:
+              import yaml
+          except ModuleNotFoundError:
+              print("PyYAML unavailable; skipping workflow parse", file=sys.stderr)
+              raise SystemExit(0)
+
+          failures = []
+          for path in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
+              try:
+                  yaml.safe_load(path.read_text(encoding="utf-8"))
+              except yaml.YAMLError as exc:
+                  failures.append(f"{path}: {exc}")
+          for failure in failures:
+              print(f"  - {failure}", file=sys.stderr)
+          raise SystemExit(1 if failures else 0)
+          PY
+
+      - name: Validate runtime base parity
+        run: python3 scripts/validate-runtime-base-parity.py
+
+  build-runtime-base:
+    name: build runtime base
+    # The base build is the expensive gate, so the steps below detect whether the
+    # base definition is actually implicated and skip the build when it is not.
+    # It builds amd64 and does not push, so a pull request proves the base builds
+    # before it can be merged.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Detect whether the runtime base is implicated
+        id: changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_ref="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [[ -z "$base_ref" || "$base_ref" == "0000000000000000000000000000000000000000" ]]; then
+            printf 'implicated=true\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$base_ref" 2>/dev/null || true
+          if git diff --name-only "$base_ref"...HEAD -- runtime-base .github/workflows/ci.yml \
+               .github/workflows/publish-runtime-base.yml | grep -q .; then
+            printf 'implicated=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'implicated=false\n' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.changed.outputs.implicated == 'true'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build runtime base (amd64, no push)
+        if: steps.changed.outputs.implicated == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: runtime-base
+          file: runtime-base/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: agent-runtime-base-ci:${{ github.sha }}
+
+      - name: Assert the base is bounded and carries no agent content
+        if: steps.changed.outputs.implicated == 'true'
+        env:
+          IMAGE: agent-runtime-base-ci:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint bash "$IMAGE" -euo pipefail -c '
+            for entrypoint in /usr/local/bin/gh-agent-broker-cli /usr/local/bin/codex /usr/local/bin/mise; do
+              [[ -e "$entrypoint" && -x "$entrypoint" ]] || {
+                printf "ERROR: required executable %s is missing.\\n" "$entrypoint" >&2
+                exit 1
+              }
+            done
+            if [[ -n "$(find /workspace -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+              printf "%s\\n" "ERROR: /workspace must be empty in the shared base." >&2
+              exit 1
+            fi
+            for forbidden in gh ssh ansible doppler tofu; do
+              if command -v "$forbidden" >/dev/null 2>&1; then
+                printf "ERROR: forbidden client %s is present.\\n" "$forbidden" >&2
+                exit 1
+              fi
+            done
+          '
+
+      - name: Report skip
+        if: steps.changed.outputs.implicated != 'true'
+        run: echo "Runtime base not implicated by this change; build skipped."

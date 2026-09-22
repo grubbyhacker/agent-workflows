@@ -1,0 +1,190 @@
+name: Publish runtime base
+
+"on":
+  push:
+    branches:
+      - main
+    paths:
+      - 'runtime-base/**'
+      - '.github/workflows/publish-runtime-base.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Build and publish agent runtime base
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Resolve pinned properties from the Dockerfile
+        id: pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          dockerfile=runtime-base/Dockerfile
+
+          broker_revision="$(grep -oE 'BROKER_REVISION=[0-9a-f]{40}' "$dockerfile" | head -n1 | cut -d= -f2)"
+          codex_version="$(grep -oE 'CODEX_VERSION=[0-9]+\.[0-9]+\.[0-9]+' "$dockerfile" | head -n1 | cut -d= -f2)"
+
+          [[ -n "$broker_revision" ]] || { printf 'ERROR: no pinned broker revision found.\n' >&2; exit 1; }
+          [[ -n "$codex_version" ]] || { printf 'ERROR: no pinned Codex version found.\n' >&2; exit 1; }
+
+          printf 'broker_revision=%s\n' "$broker_revision" >> "$GITHUB_OUTPUT"
+          printf 'codex_version=%s\n' "$codex_version" >> "$GITHUB_OUTPUT"
+          printf 'image=ghcr.io/%s/agent-runtime-base\n' "${{ github.repository_owner }}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the shared base agrees with the inline agent-image base
+        run: python3 scripts/validate-runtime-base-parity.py
+
+      - name: Set up QEMU for multi-platform builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.pins.outputs.image }}
+          tags: |
+            type=sha,prefix=sha-,format=long
+            type=raw,value=main,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+
+      - name: Build runtime base for verification
+        uses: docker/build-push-action@v7
+        with:
+          context: runtime-base
+          file: runtime-base/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: agent-runtime-base-verification:${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Assert broker source provenance and installed entrypoints
+        env:
+          IMAGE: agent-runtime-base-verification:${{ github.sha }}
+          BROKER_SOURCE_REVISION: ${{ steps.pins.outputs.broker_revision }}
+          CODEX_VERSION: ${{ steps.pins.outputs.codex_version }}
+        run: |
+          set -euo pipefail
+          [[ "$(docker image inspect --format '{{.Architecture}}' "$IMAGE")" == amd64 ]]
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "io.grubbyhacker.agent-image.broker-source-revision" }}' "$IMAGE")" == "$BROKER_SOURCE_REVISION" ]]
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "io.grubbyhacker.agent-runtime-base.codex-version" }}' "$IMAGE")" == "$CODEX_VERSION" ]]
+          docker run --rm --entrypoint bash -e BROKER_SOURCE_REVISION "$IMAGE" -euo pipefail -c '
+            [[ "$(uname -m)" == x86_64 ]]
+            [[ "$(cat /usr/local/share/agent-image/broker-source-revision)" == "$BROKER_SOURCE_REVISION" ]]
+            for entrypoint in \
+              /usr/local/bin/gh-agent-broker-cli \
+              /usr/local/bin/agent-repo-task-worker \
+              /usr/local/bin/agent-codex-repo-prep-worker \
+              /usr/local/bin/agent-codex-repo-task-worker \
+              /usr/local/bin/agent-codex-delivery-worker \
+              /usr/local/bin/agent-codex-recovery-validation-worker \
+              /usr/local/lib/agent-worker-result.sh \
+              /usr/local/bin/codex \
+              /usr/local/bin/mise; do
+              [[ -e "$entrypoint" && -x "$entrypoint" ]] || {
+                printf "ERROR: required executable %s is missing.\\n" "$entrypoint" >&2
+                exit 1
+              }
+            done
+          '
+
+      - name: Assert the base carries no repository dependencies or agent code
+        env:
+          IMAGE: agent-runtime-base-verification:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint bash "$IMAGE" -euo pipefail -c '
+            if [[ -e /usr/local/share/agent-image/dependency-manifest.sha256 ]]; then
+              printf "%s\\n" "ERROR: the shared base must not carry a dependency manifest; that belongs to a derived agent image." >&2
+              exit 1
+            fi
+            if [[ -n "$(find /workspace -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+              printf "%s\\n" "ERROR: /workspace must be empty in the shared base." >&2
+              exit 1
+            fi
+          '
+
+      - name: Assert forbidden clients are absent from the built image
+        env:
+          IMAGE: agent-runtime-base-verification:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint bash "$IMAGE" -euo pipefail -c '
+            forbidden_command_patterns="gh tofu opentofu ansible* doppler ssh ssh-* scp sftp dbclient"
+            for pattern in $forbidden_command_patterns; do
+              for command in $(compgen -c | LC_ALL=C sort -u); do
+                [[ "$command" == $pattern ]] || continue
+                printf "ERROR: forbidden command %s is present at %s\\n" "$command" "$(command -v "$command")" >&2
+                exit 1
+              done
+            done
+            if dpkg-query -W -f="\${Status}" openssh-client 2>/dev/null | grep -q "install ok installed"; then
+              printf "%s\\n" "ERROR: openssh-client is installed." >&2
+              exit 1
+            fi
+            declare -A scanned_directories=()
+            IFS=: read -r -a path_directories <<< "$PATH"
+            path_directories+=(/bin /sbin /usr/bin /usr/sbin /usr/local/bin /usr/local/sbin)
+            for directory in "${path_directories[@]}"; do
+              [[ -n "$directory" && -d "$directory" ]] || continue
+              [[ -n "${scanned_directories[$directory]:-}" ]] && continue
+              scanned_directories[$directory]=1
+              while IFS= read -r -d "" client; do
+                basename="${client##*/}"
+                case "$basename" in
+                  gh|tofu|opentofu|ansible*|doppler|ssh|ssh-*|scp|sftp|dbclient)
+                    if [[ -x "$client" ]]; then
+                      printf "ERROR: forbidden executable client exists at %s\\n" "$client" >&2
+                      exit 1
+                    fi
+                    ;;
+                esac
+              done < <(find "$directory" -maxdepth 1 \( -type f -o -type l \) -print0)
+            done
+          '
+
+      - name: Publish verified runtime base for supported platforms
+        uses: docker/build-push-action@v7
+        with:
+          context: runtime-base
+          file: runtime-base/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Report the immutable coordinate
+        env:
+          IMAGE: ${{ steps.pins.outputs.image }}
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "${IMAGE}:sha-${GITHUB_SHA}" \
+            --format '{{json .Manifest}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
+          printf 'Published %s:sha-%s@%s\n' "$IMAGE" "$GITHUB_SHA" "$digest"
+          {
+            printf '### Agent runtime base published\n\n'
+            printf 'Derive agent images from this immutable coordinate:\n\n'
+            printf '```\n%s:sha-%s@%s\n```\n' "$IMAGE" "$GITHUB_SHA" "$digest"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -36,3 +36,23 @@ jobs:
 Callers must reference a major version such as `@v1`, not `@main`. The major
 tag is a moving interface version: non-breaking updates advance it, while
 breaking changes require a new major tag such as `v2`.
+
+## Agent runtime base
+
+`runtime-base/Dockerfile` is the shared bounded runtime that agent images derive
+from. It is published as `ghcr.io/<owner>/agent-runtime-base` with `sha-<commit>`,
+`main`, and semver tags, and it contains the broker CLI, the worker entrypoints,
+Codex, mise, and a minimal shell toolchain — no repository dependencies and no
+agent code.
+
+Consumers pin the immutable coordinate
+`ghcr.io/<owner>/agent-runtime-base:sha-<commit>@sha256:<digest>`, which the
+publish workflow prints in its run summary.
+
+It exists so that a specialised agent can ship as its own artifact, on its own
+release cadence, without reusing a service image. `publish-agent-image.yml` is
+unchanged and still generates its own equivalent base inline, so existing callers
+are unaffected; `scripts/validate-runtime-base-parity.py` fails CI if the two
+definitions ever disagree on a pinned property.
+
+See `docs/agent-platform/runtime-base.md`.
